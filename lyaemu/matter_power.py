@@ -4,6 +4,7 @@ import os.path
 import numpy as np
 import scipy.interpolate
 from .coarse_grid import Emulator
+import math
 
 class MatterPowerEmulator(Emulator):
     """Build an emulator based on the matter power spectrum instead of the flux power spectrum, for testing."""
