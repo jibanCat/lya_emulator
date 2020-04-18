@@ -32,11 +32,11 @@ class MatterDesign(LatinDesign):
             hubble_bounds: Tuple, scalar_amp_bounds: Tuple, 
             ns_bounds: Tuple) -> None:
         # initialise Parameter instances
-        omega0     = ContinuousParameter('omega0', *omega0_bounds)
-        omegab     = ContinuousParameter('omegab', *omegab_bounds)
-        hubble     = ContinuousParameter('h',      *hubble_bounds)
-        scalar_amp = ContinuousParameter('As',     *scalar_amp_bounds)
-        ns         = ContinuousParameter('ns',     *ns_bounds)
+        omega0     = ContinuousParameter('omega0',     *omega0_bounds)
+        omegab     = ContinuousParameter('omegab',     *omegab_bounds)
+        hubble     = ContinuousParameter('hubble',     *hubble_bounds)
+        scalar_amp = ContinuousParameter('scalar_amp', *scalar_amp_bounds)
+        ns         = ContinuousParameter('ns',         *ns_bounds)
 
         parameter_space = ParameterSpace([
             omega0, omegab, hubble, scalar_amp, ns])

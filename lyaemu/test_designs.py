@@ -20,6 +20,8 @@ def test_matter_design() -> None:
     assert np.all(samples[:, 0] > matter.parameter_space.get_bounds()[0][0])
     assert np.all(samples[:, 0] < matter.parameter_space.get_bounds()[0][1])
 
+    matter.save_json(point_count, "matterLatin_high.json")
+
     # more points
     point_count = 100
 
@@ -31,3 +33,19 @@ def test_matter_design() -> None:
     # different order
     assert np.all(samples[:, -1] > matter.parameter_space.get_bounds()[-1][0])
     assert np.all(samples[:, -1] < matter.parameter_space.get_bounds()[-1][1])
+
+    matter.save_json(point_count, "matterLatin_low.json")
+
+    # even more points
+    point_count = 500
+
+    samples = matter.get_samples(point_count)
+
+    assert np.all(samples[:, 0] > matter.parameter_space.get_bounds()[0][0])
+    assert np.all(samples[:, 0] < matter.parameter_space.get_bounds()[0][1])
+
+    # different order
+    assert np.all(samples[:, -1] > matter.parameter_space.get_bounds()[-1][0])
+    assert np.all(samples[:, -1] < matter.parameter_space.get_bounds()[-1][1])
+
+    matter.save_json(point_count, "matterLatin_super_low.json")
