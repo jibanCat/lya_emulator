@@ -4,6 +4,7 @@ Generate cosmological samples from ParameterSpace using emukit
 :class: MatterDesign
 '''
 from typing import Tuple
+import json
 import numpy as np
 from emukit.core import ContinuousParameter, ParameterSpace
 from .latin_design import LatinDesign
@@ -47,7 +48,20 @@ class MatterDesign(LatinDesign):
         '''
         Save Latin HyperCube of Cosmological ParameterSpace into a json file.
         '''
-        raise NotImplementedError
+        dict_latin = {}
 
+        # get a list of param names and then init the dict to save
+        param_names = self.parameter_space.parameter_names
 
-        
+        samples = self.get_samples(point_count)
+
+        for i,name in enumerate(param_names):
+            # the samples are in order
+            dict_latin[name] = samples[:, i].tolist()
+
+        # saving some hyper-parameters
+        dict_latin['bounds']          = self.parameter_space.get_bounds()
+        dict_latin['parameter_names'] = param_names
+
+        with open(out_filename, 'w') as f:
+            json.dump(dict_latin, f, indent=2)
