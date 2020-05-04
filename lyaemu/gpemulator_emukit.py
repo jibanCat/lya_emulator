@@ -47,12 +47,13 @@ class MatterGP(GPyModelWrapper):
         #Should we test the built emulator?
         #Turn this off because our emulator is now so large
         #that it always fails because of Gaussianity!
-        self._test_interp = False
+        self._test_interp : bool = False
 
         #Get the flux power and build an emulator
+        # and inherent the GPyModelWrapper after initialize the GPyRegression
         self._get_interp(flux_vectors=powers)
 
-        self.gp_updated = None
+        # Testing the interpolation
         if self._test_interp:
             self._check_interp(powers)
             self._test_interp = False
