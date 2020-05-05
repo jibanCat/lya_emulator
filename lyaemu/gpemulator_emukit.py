@@ -29,17 +29,21 @@ class MatterGP(GPyModelWrapper):
     GPy wrapper. The underlying GP functionality is hardcoded in the class,
     and the by using emukit's wrapper we should be able to take advantage of
     the Experimental Design Loop in emukit to do Bayes Opt.
+    
+    Note: Power spectra should be in loglog scale.
+
     :param params: (n_points, n_dims)  parameter vectors.
     :param powers: (n_points, k modes) flux power spectra.
     :param param_limits: (n_dim, 2) param_limits is a list of parameter limits.
     :param n_restarts (int): number of optimization restarts you want in GPy.
     """
     def __init__(self, params: np.ndarray, powers: np.ndarray, 
-            param_limits: np.ndarray):
+            param_limits: np.ndarray, n_restarts: int = 10):
         # basic input vectors for building a GPyRegression
         self.params       = params
         self.param_limits = param_limits # for mapping params to a unit cube
         self.powers       = powers
+        self.n_restarts   = n_restarts
 
         # the minimum tolerance for the interpolation errors
         self.intol = 1e-4
@@ -58,27 +62,77 @@ class MatterGP(GPyModelWrapper):
             self._check_interp(powers)
             self._test_interp = False
 
-    def _get_interp(self, flux_vectors):
-        """Build the actual interpolator."""
-        #Map the parameters onto a unit cube so that all the variations are similar in magnitude
-        # Is this because the RBF length scale is the same for all dims?
-        nparams = np.shape(self.params)[1]
-        params_cube = map_to_unit_cube_list(self.params, self.param_limits)
+    @staticmethod
+    def _normalize(flux_vectors: np.ndarray, params_cube: np.ndarray
+            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Normalize the flux_vectors to a zero mean vector
+        using the median of flux_vectors
+
+        :param flux_vectors: (n_points, k modes) flux power spectra.
+        :param params_cube: (n_points, n_dims) parameter vectors in a unit cube.
+        :return: (normspectra, scalefactors, paramzero)
+        """
+        #Normalise the flux vectors by the median power spectrum.
+        #This ensures that the GP prior (a zero-mean input) is close to true.
+        medind = np.argsort(np.mean(flux_vectors, axis=1))[
+            np.shape(flux_vectors)[0]//2]
+
+        scalefactors = flux_vectors[medind,:]
+        paramzero    = params_cube[medind,:]
+
+        #Normalise by the median value
+        # -> shift power spectra to zero mean
+        normspectra = flux_vectors / scalefactors -1.
+        
+        return normspectra, scalefactors, paramzero
+
+    @staticmethod
+    def _map_params_to_unit_cube(params: np.ndarray, 
+            param_limits: np.ndarray) -> np.ndarray:
+        '''
+        Map the parameters onto a unit cube so that all the variations are
+        similar in magnitude.
+        
+        :param params: (n_points, n_dims) parameter vectors
+        :param param_limits: (n_dim, 2) param_limits is a list 
+            of parameter limits.
+        :return: params_cube, (n_points, n_dims) parameter vectors 
+            in a unit cube.
+        '''
+        nparams = np.shape(params)[1]
+        params_cube = map_to_unit_cube_list(
+            params, param_limits)
+        assert params_cube.shape[1] == nparams
+
         #Check that we span the parameter space
+        # note: this is a unit LH cube spanning from Θ ∈ [0, 1]^num_dim
         for i in range(nparams):
             assert np.max(params_cube[:,i]) > 0.9
             assert np.min(params_cube[:,i]) < 0.1
-        #print('Normalised parameter values =', params_cube)
-        #Normalise the flux vectors by the median power spectrum.
-        #This ensures that the GP prior (a zero-mean input) is close to true.
-        medind = np.argsort(np.mean(flux_vectors, axis=1))[np.shape(flux_vectors)[0]//2]
-        self.scalefactors = flux_vectors[medind,:]
-        self.paramzero = params_cube[medind,:]
-        #Normalise by the median value
-        normspectra = flux_vectors/self.scalefactors -1.
 
-        #Standard squared-exponential kernel with a different length scale for each parameter, as
-        #they may have very different physical properties.
+        return params_cube
+
+    def _get_interp(self, flux_vectors: np.ndarray) -> None:
+        """
+        Build the actual interpolator and get the GPyModelWrapper ready,
+        inherent the GPyRegression to MatterGP.
+        
+        :param flux_vectors: (n_points, k modes) flux power spectra.
+        """
+        #Map the parameters onto a unit cube so that all the variations are
+        # similar in magnitude.
+        nparams = np.shape(self.params)[1]
+        params_cube = self._map_params_to_unit_cube(
+            self.params, self.param_limits)
+
+        #Normalise by the median value
+        # -> shift power spectra to zero mean
+        normspectra, self.scalefactors, self.paramzero = self._normalize(
+            flux_vectors, params_cube)
+
+        #Standard squared-exponential kernel with a different length scale for 
+        # each parameter, as they may have very different physical properties.
         kernel = GPy.kern.Linear(nparams)
         kernel += GPy.kern.RBF(nparams)
 
@@ -86,18 +140,17 @@ class MatterGP(GPyModelWrapper):
         #kernel += GPy.kern.RatQuad(nparams)
 
         #noutput = np.shape(normspectra)[1]
-        self.gp = GPy.models.GPRegression(params_cube, normspectra,kernel=kernel, noise_var=1e-10)
+        self.gp = GPy.models.GPRegression(
+            params_cube, normspectra, kernel=kernel, noise_var=1e-10)
 
-        status = self.gp.optimize(messages=False) #True
-        #print('Gradients of model hyperparameters [after optimisation] =', self.gp.gradient)
-        #Let's check that hyperparameter optimisation is converged
-        if status.status != 'Converged':
-            print("Restarting optimization")
-            self.gp.optimize_restarts(num_restarts=10)
-        #print(self.gp)
-        #print('Gradients of model hyperparameters [after second optimisation (x 10)] =', self.gp.gradient)
+        # inherent the GP model to the GPyModelWrapper
+        # this line put here because we want to change model 
+        # when we re-do interp
+        super().__init__(gpy_model= self.gp, n_restarts=self.n_restarts)
 
-    def _check_interp(self, flux_vectors):
+        self.optimize() # GPyModelWrapper use model.optimize_restarts
+
+    def _check_interp(self, flux_vectors: np.ndarray):
         """Check we reproduce the input"""
         for i, pp in enumerate(self.params):
             means, _ = self.predict(pp.reshape(1,-1))
@@ -106,23 +159,33 @@ class MatterGP(GPyModelWrapper):
                 print("Bad interpolation at:", np.where(worst > np.max(worst)*0.9), np.max(worst))
                 assert np.max(worst) < self.intol
 
-    def _predict(self, params, GP_instance):
-        """Get the predicted flux at a parameter value (or list of parameter values)."""
-        #Map the parameters onto a unit cube so that all the variations are similar in magnitude
+    def predict(self, params: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get the predicted flux at a parameter value
+        (or list of parameter values).
+
+        :param params: (n_points, n_dim)
+        :return: (mean, variance) array of size n_points x 1 and
+            n_points x n_points of the predictive mean and variance at each
+            input location
+        """
+        #Map the parameters onto a unit cube so that all the variations are 
+        #similar in magnitude
         params_cube = map_to_unit_cube_list(params, self.param_limits)
-        flux_predict, var = GP_instance.predict(params_cube)
-        mean = (flux_predict+1)*self.scalefactors
-        std = np.sqrt(var) * self.scalefactors
+
+        # make predictions using current model
+        flux_predict, var = self.model.predict(params_cube)
+
+        mean = (flux_predict + 1) * self.scalefactors
+        std  = np.sqrt(var) * self.scalefactors
         return mean, std
 
-    def predict(self, params):
-        """Get the predicted flux power spectrum (and error) at a parameter value
-        (or list of parameter values)."""
-        return self._predict(params, GP_instance=self.gp)
-
-    def get_predict_error(self, test_params, test_exact):
-        """Get the difference between the predicted GP
-        interpolation and some exactly computed test parameters."""
+    def get_predict_error(self, test_params: np.ndarray,
+            test_exact: np.ndarray) -> np.ndarray:
+        """
+        Get the difference between the predicted GP
+        interpolation and some exactly computed test parameters.
+        """
         #Note: this is not used anywhere
         test_exact = test_exact.reshape(np.shape(test_params)[0],-1)
         predict, sigma = self.predict(test_params)
