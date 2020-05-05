@@ -180,6 +180,29 @@ class MatterGP(GPyModelWrapper):
         std  = np.sqrt(var) * self.scalefactors
         return mean, std
 
+    def predict_with_full_covariance(self, params: np.ndarray
+            ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get the predicted flux at a parameter value
+        (or list of parameter values).
+
+        :param params: (n_points, n_dim)
+        :return: (flux_predict, cov) array of size n_points x 1 and
+            n_points x n_points of the predictive mean and variance at each
+            input location
+            Note: this is before normalization.
+        """
+        #Map the parameters onto a unit cube so that all the variations are 
+        #similar in magnitude
+        params_cube = map_to_unit_cube_list(params, self.param_limits)
+
+        # make predictions using current model
+        flux_predict, cov = self.model.predict(params_cube, full_cov=True)
+
+        # mean = (flux_predict + 1) * self.scalefactors
+        # std  = np.sqrt(var) * self.scalefactors
+        return flux_predict, cov
+
     def get_predict_error(self, test_params: np.ndarray,
             test_exact: np.ndarray) -> np.ndarray:
         """
