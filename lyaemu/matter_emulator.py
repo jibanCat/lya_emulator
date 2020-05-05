@@ -45,15 +45,50 @@ class HDF5Emulator(IModel):
     def __init__(self, multips : Type[h5py.File]) -> None:
         self.multips = multips
 
-    @staticmethod
-    def hdf52parameters(multips : Type[h5py.File]) -> Type[ParameterSpace]:
+        # set the parameter space
+        self.set_parameters()
+
+    def set_parameters(self) -> None:
         '''
-        Read out the parameter samplings and bounds in the HDF5,
-        transform the samplings to the X and Y attrs
+        Set the parameter space of this experiment using the information
+        given in the hdf5 file.
+        
+        :attr parameter_space: emukit.core.ParameterSpace
+        :attr params: (n_points, n_dim),
+            n_points: number of experiments we built
+            n_dim: number of input parameters we sample for each experiment
         '''
-        # self._X = Latin_samplings
-        # self._Y = powerspecs
-        raise NotImplementedError
+        # query the full list of parameter names
+        param_names  = self.multips['parameter_names'][()]
+        param_bounds = self.multips['bounds'][()]
+
+        nparams = param_names.shape[0]
+        assert nparams == param_bounds.shape[0]
+        assert param_bounds.shape[1] == 2
+
+        # build the ParameterSpace instance
+        param_list = []
+        for pname,bound in zip(param_names, param_bounds):
+            param_list.append( 
+                ContinuousParameter(pname, *bound) )
+
+        self.parameter_space = ParameterSpace(param_list)
+        assert np.all(self.parameter_space.parameter_names == param_names)
+        assert np.array(self.parameter_space.get_bounds()
+            ).shape == param_bounds.shape
+
+        # setup the X input parameters
+        # We don't setup Y here since we don't know what's the shape of Y,
+        # but the shape of X can be found by multips['parameter_names']
+        X_list = []
+        for pname in param_names:
+            # it is always faster to assign a variable first than directly
+            # operating on HDF5's IO
+            p_samples = self.multips[pname][()]
+            X_list.append(p_samples)
+        
+        self._X = np.array(X_list).T # (n_points, n_dim)
+        assert self._X.shape[1] == nparams
 
     def predict(self, X : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         '''
@@ -69,7 +104,7 @@ class HDF5Emulator(IModel):
     
     @property
     def X(self) -> np.ndarray:
-        raise NotImplementedError
+        return self._X
     
     @property
     def Y(self) -> np.ndarray:
@@ -111,11 +146,20 @@ class MatterEmulator(HDF5Emulator):
     def __init__(self, mutlips : Type[h5py.File]):
         raise NotImplementedError
     
-    @staticmethod
-    def hdf52parameters(multips : Type[h5py.File]) -> Type[ParameterSpace]:
+    
+    def set_powerspecs(self):
         '''
-        Read out the parameter samplings and bounds in the HDF5,
-        transform the samplings to the X and Y attrs
+        Set the multi-dimensional X and Y for input and output,
+        where X = [X1, X2, ..., Xn], Xi is an input for each GP,
+        Y = [Y1, Y2, ..., Yn], Yi is the corresponding target for the GP.
+
+        :attr X: (N_GPs, n_points, n_dim),
+            n_GPs: means how many GPs we want, either all of them to be
+                independent or using MultiOutput GP and building cov for GPs.
+            n_points: number of experiments we built
+            n_dim: number of input parameters we sample for each experiment
+        :attr Y: (N_GPs, n_points, k_modes)
+        :attr scale_factors:
         '''
         # self._X = Latin_samplings
         # self._Y = powerspecs
