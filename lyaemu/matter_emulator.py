@@ -30,6 +30,15 @@ class HDF5Emulator(IModel):
 
     This class should include the basic transformation from the HDF5 file
     from np.ndarray to emukit
+
+    this class should works for :
+    - placeholder for model related implementations
+    - convert parameter array in the file to ParameterSpace
+    - 
+
+    Future:
+    - Experimental loop implementation
+    - BayesOpt implementation
     '''
     def __init__(self, multips : Type[h5py.File]) -> None:
         self.multips = multips
