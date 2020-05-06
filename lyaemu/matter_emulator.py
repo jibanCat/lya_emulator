@@ -150,7 +150,7 @@ class MatterEmulator(HDF5Emulator):
         super().__init__(multips)
 
         # set the target Y powerspecs
-        # self.set_powerspecs()
+        self.set_powerspecs()
 
 
     def set_powerspecs(self):
@@ -171,6 +171,7 @@ class MatterEmulator(HDF5Emulator):
         kf_list            = []
         powerspecs_list    = []
         scale_factors_list = []
+        mode_list          = [] # this is for rebinning the powerspecs
 
         for sim in self._gen_subgroups():
             # query powerspecs:
@@ -185,6 +186,7 @@ class MatterEmulator(HDF5Emulator):
 
             # power spectra should store across all redshifts
             powerspecs_list.append(powerspecs[:, :, 1]) # (n redshifts, k_modes)
+            mode_list.append(powerspecs[:, :, 2])      # (n redshifts, k_modes)
 
             scale_factors_list.append(sim['scale_factors'][()])
 
@@ -198,11 +200,12 @@ class MatterEmulator(HDF5Emulator):
         self.scale_factors_list = scale_factors_list # List[ sim_i/scale_factors ]
 
         self.powerspecs_list = powerspecs_list
+        self.mode_list       = mode_list
         
         # filter out non-shared scale factors
         # this modifies self.scale_factors_list and self.powerspecs_list
         n_points = self._X.shape[0] # total number of simulations we ran
-        scale_factors, powerspecs = self.filter_scale_factors(
+        scale_factors, powerspecs, modes = self.filter_scale_factors(
             num_simulations=n_points)
 
         # update scale factors and powerspecs after the filtering
@@ -215,10 +218,22 @@ class MatterEmulator(HDF5Emulator):
         assert self.scale_factors[-1].shape[0] == self.scale_factors[0].shape[0]
         assert self.scale_factors[-1][-1] == self.scale_factors[0][-1]
 
+        # rebin the power specs
+        # modify self.modes, self.powerspecs and will change the size
+        # of these two matrices. Note that we assume the size of matrices
+        # will be the same across different simulations. So make sure
+        # write some tests on that.
+        kf, powerspecs = self.rebin_matter_power(
+            self.kf, self.powerspecs, modes)
 
+        self.kf         = kf
+        self.powerspecs = powerspecs
+
+        # also set to Y target value
+        self._Y = powerspecs
 
     def filter_scale_factors(self, num_simulations:int
-            ) -> Tuple[np.ndarray, np.ndarray]:
+            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Filter out the scale factors which do not appear in other
 
@@ -240,7 +255,7 @@ class MatterEmulator(HDF5Emulator):
 
         # thresholding all the scale factors that not happenning in every sims
         # first need to get the counts of each scale factors
-        count = Counter(flatten_scale_factors)
+        count: Counter = Counter(flatten_scale_factors)
 
         shared_scale_factors = np.array(
             [key for key,val in count.items() if val >= num_simulations])
@@ -249,20 +264,25 @@ class MatterEmulator(HDF5Emulator):
         # update the powerspecs and scale factors based on whether they are
         # in the shared_scale_factors
         assert len(self.powerspecs_list) == num_simulations
+        assert len(self.mode_list) == num_simulations
 
         scale_factors = np.empty((num_simulations, len(shared_scale_factors)))
         powerspecs    = np.empty((num_simulations, len(shared_scale_factors),
+            len(self.kf) )) # (n_points, n_redshifts, k_modes)
+        modes         = np.empty((num_simulations, len(shared_scale_factors),
             len(self.kf) )) # (n_points, n_redshifts, k_modes)
 
         for i in range(num_simulations):
             # only select the scale factors in the shared_scale_factors
             this_scale_factors = self.scale_factors_list[i]
             this_powerspecs    = self.powerspecs_list[i]
+            this_modes         = self.mode_list[i]
 
             ind = np.isin(this_scale_factors, shared_scale_factors)
 
             scale_factors[i, :] = this_scale_factors[ind]
             powerspecs[i, :, :] = this_powerspecs[ind, :]
+            modes[i, :, :]      = this_modes[ind, :]
 
         assert np.sum( np.abs( scale_factors - shared_scale_factors ) 
             / scale_factors ) < 1e04
@@ -271,8 +291,8 @@ class MatterEmulator(HDF5Emulator):
             "only {} powerspecs left per simulation".format(
             len(shared_scale_factors))
             ))
-        
-        return scale_factors, powerspecs
+
+        return scale_factors, powerspecs, modes
 
     def _gen_subgroups(self) -> Generator:
         '''
@@ -288,8 +308,40 @@ class MatterEmulator(HDF5Emulator):
             yield self.multips[name]
 
     @staticmethod
-    def rebin_matter_power(k_bins : np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+    def rebin_matter_power(kf: np.ndarray, powerspecs : np.ndarray,
+            modes : np.ndarray) -> Tuple[ np.ndarray, np.ndarray ]:
+        '''
+        Re-bin powerspecs. This is done by using MP-Gadget's tools
+        `modecount_rebin`. Note that we apply the rebinning for all
+        of the simulations and all of the redshifts.
+
+        :param kf: (k_modes, )
+        :param powerspecs: (n_points, n_redshifts, k_modes)
+        :param modes: (n_points, n_redshifts, k_modes)
+
+        :return: (kf, powerspecs)
+        '''
+        # re-bin powerspectra per simulation
+        num_simulations = powerspecs.shape[0]
+
+        powerspecs_list = []
+        kf_list         = [] # keep each kf and test the lengths at the end
+
+        for i in range(num_simulations):
+            this_powerspecs = powerspecs[i, :, :]
+            this_modes      = modes[i, :, :]
+
+            # re-bin P(z,k)
+            this_kf, this_powerspecs = modecount_rebin_multi_pk(
+                kf, this_powerspecs, this_modes)
+            
+            powerspecs_list.append(this_powerspecs)
+            kf_list.append(this_kf)
+        
+        assert np.abs( (np.array(kf_list) - kf_list[-1]) / kf_list[0] ).sum() < 1e-4
+        assert powerspecs_list[0].shape == powerspecs_list[-1].shape
+
+        return np.array(kf_list[0]), np.array(powerspecs_list)
 
     def predict(self, X : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         '''
@@ -309,14 +361,65 @@ class MatterEmulator(HDF5Emulator):
     
     @property
     def Y(self) -> np.ndarray:
-        raise NotImplementedError
+        return self._Y
 
 
 class MultiFidelityEmulator(IModel, IDifferentiable):
     def __init__(self, mutlips_list : List[Type[h5py.File]] ):
         raise NotImplementedError
 
+def modecount_rebin_multi_pk(kk:np.ndarray, pk:np.ndarray, modes:np.ndarray,
+        minmodes:int=20, ndesired:int=200) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Rebins a power spectrum so that there are sufficient modes in each bin.
+    Original version was in MP-Gadget/tools.
+    Slightly modified for working in 2-dimensional P(z,k)
+    
+    :param kk: (k_modes,)
+    :param pk: (n_redshifts, k_modes)
+    :param modes: (n_redshifts, k_modes)
 
+    :return: (kf, powerspecs)
+    """
+    assert np.all(kk) > 0
+    logkk  = np.log10(kk)
+
+    mdlogk = (np.max(logkk) - np.min(logkk)) / ndesired
+
+    istart = iend = 1
+    
+    count = 0
+
+    # assume all modes are the same across redshifts
+    assert np.sum(np.abs( (modes - modes[0, :]) / modes)) < 1e-4
+    modes = modes[0, :]
+    assert modes.shape[0] == pk.shape[1]
+
+    # we assume kk the same for all redshifts but pk is a 2-dimensional
+    # array. So pk here should save all of the 0th elements across all zs
+    k_list  = [kk[0]]
+    pk_list = [pk[:, 0]] # (1, n_redshifts), have to transpose later
+    
+    targetlogk = mdlogk + logkk[istart]
+
+    while iend < np.size(logkk) - 1:
+        count += modes[iend]
+        iend  += 1
+
+        if count >= minmodes and logkk[iend-1] >= targetlogk:
+            pk1 = np.sum(modes[istart:iend] * pk[:, istart:iend], axis=1)/count
+            kk1 = np.sum(modes[istart:iend] * kk[istart:iend])/count
+            k_list.append(kk1)
+            pk_list.append(pk1)
+
+            # start counting next bin
+            istart = iend
+            targetlogk = mdlogk + logkk[istart]
+            count = 0
+
+    k_list  = np.array(k_list)
+    pk_list = np.array(pk_list).T
+    return (k_list, pk_list)
 
 def modecount_rebin(kk:np.ndarray, pk:np.ndarray, modes:np.ndarray,
         minmodes:int=20, ndesired:int=200) -> Tuple[np.ndarray, np.ndarray]:
