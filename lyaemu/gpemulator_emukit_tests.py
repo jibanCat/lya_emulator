@@ -2,12 +2,14 @@
 Test the trained emukit emulators
 '''
 import numpy as np
+import h5py
 
 from emukit.experimental_design import ExperimentalDesignLoop
 from emukit.core import ParameterSpace, ContinuousParameter
 
 from .gpemulator_emukit import SimpleGP, MatterGP
 from .matter_emulator import modecount_rebin_multi_pk, modecount_rebin
+from .matter_emulator import MatterEmulator
 
 class Power(object):
     """Mock power object"""
@@ -66,6 +68,22 @@ def test_multi_bins():
         np.vstack((modes, modes)))
     
     assert np.abs( (pk3[0, :] - pk3[1, :]) / pk3[0, :] ).sum() < 1e-4
+
+def test_highRes_interp(fname: str = "data/highRes/processed/test_dmonly.hdf5") -> None:
+    '''
+    Test the interpolation result applying on highRes data
+    '''
+    f = h5py.File(fname, 'r')
+    
+    # build the MultiBin Emulator across all redshifts
+    emu = MatterEmulator(f)
+
+    emu._get_interp(emu.X, emu.kf, emu.Y)
+
+    means, stds = emu.predict(emu.X)
+
+    # test interpolation
+    assert np.abs( (means - emu.Y) / emu.Y ).mean() < 1e-4
 
 # # TODO: not quite working yet
 # def test_emukit_loop():
