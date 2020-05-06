@@ -113,6 +113,9 @@ class HDF5Emulator(IModel):
     def Y(self) -> np.ndarray:
         raise NotImplementedError
 
+    def get_bounds(self):
+        return self.parameter_space.get_bounds()
+
 
 class MatterEmulator(HDF5Emulator):
     '''
@@ -168,7 +171,7 @@ class MatterEmulator(HDF5Emulator):
         # initialize GP for each redshift
         # the inputs for MatterGP are
         # params:(n_points, n_dim), powerspecs:(n_points, k_modes)
-        param_limits  = np.array(self.parameter_space.get_bounds())
+        param_limits  = np.array(self.get_bounds())
         num_redshifts = self.scale_factors.shape[1]
 
         # loop over redshift bins; no need for normalising due to we normalise
@@ -403,6 +406,28 @@ class MatterEmulator(HDF5Emulator):
     def Y(self) -> np.ndarray:
         return self._Y
 
+
+class MultiBinGP(MatterEmulator):
+    '''
+    A testing class for MatterEmulator without HDF5 loading.
+    Similar to .gpemulator.MultiBinGP
+
+    :param params: (n_points, n_dim)
+    :param kf: (k_modes, ) kf assumed to be the same for all simulations
+        and all redshifts.
+    :param powerspecs: (n_points, n_redshifts, k_modes) un-normalized
+        powerspecs.
+    :param scale_factors: (n_points, n_redshifts),
+        though all scale_factors from different simulations are chose
+        to be the same
+    '''
+    def __init__(self, params: np.ndarray, kf: np.ndarray, powers: np.ndarray,
+            param_limits: np.ndarray, scale_factor: np.ndarray):
+        self._X = params
+        self._Y = powers
+        self.kf = kf
+
+        self.scale_factors = scale_factor
 
 class MultiFidelityEmulator(IModel, IDifferentiable):
     def __init__(self, mutlips_list : List[Type[h5py.File]] ):
