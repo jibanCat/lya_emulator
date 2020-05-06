@@ -152,6 +152,32 @@ class MatterEmulator(HDF5Emulator):
         # set the target Y powerspecs
         self.set_powerspecs()
 
+    def _get_interp(self, params:np.ndarray, kf: np.ndarray,
+            powerpsecs: np.ndarray):
+        '''
+        Build a list of interpolators and get the MatterGPs ready.
+        Each element in self.gps is a MatterGP interpolator in a given z.
+        The order of z follows the self.scale_factor.
+
+        :param params: (n_points, n_dim)
+        :param kf: (k_modes, ) kf assumed to be the same for all simulations
+            and all redshifts.
+        :param powerspecs: (n_points, n_redshifts, k_modes) un-normalized
+            powerspecs.
+        '''
+        # initialize GP for each redshift
+        # the inputs for MatterGP are
+        # params:(n_points, n_dim), powerspecs:(n_points, k_modes)
+        param_limits  = np.array(self.parameter_space.get_bounds())
+        num_redshifts = self.scale_factors.shape[1]
+
+        # loop over redshift bins; no need for normalising due to we normalise
+        # inside the MatterGP
+        gp = lambda i: MatterGP(
+            params, powerpsecs[:, i, :], param_limits)
+
+        self.gps = [gp(i) for i in range(num_redshifts)]
+        print("Number of redshifts for emulator generator = ", num_redshifts)
 
     def set_powerspecs(self):
         '''
@@ -159,13 +185,13 @@ class MatterEmulator(HDF5Emulator):
         where X = [X1, X2, ..., Xn], Xi is an input for each GP,
         Y = [Y1, Y2, ..., Yn], Yi is the corresponding target for the GP.
 
-        :attr X: (N_GPs, n_points, n_dim),
-            n_GPs: means how many GPs we want, either all of them to be
-                independent or using MultiOutput GP and building cov for GPs.
+        :attr Y: (n_points, n_redshifts, k_modes),
+            n_redshifts: number of redshift bins
             n_points: number of experiments we built
-            n_dim: number of input parameters we sample for each experiment
-        :attr Y: (N_GPs, n_points, k_modes)
-        :attr scale_factors:
+            k_modes: number of k modes in power specs
+        :attr scale_factors: (n_points, n_redshifts),
+            though all scale_factors from different simulations are chose
+            to be the same
         '''
         # loop over simulations
         kf_list            = []
