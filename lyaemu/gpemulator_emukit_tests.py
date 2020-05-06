@@ -9,7 +9,7 @@ from emukit.core import ParameterSpace, ContinuousParameter
 
 from .gpemulator_emukit import SimpleGP, MatterGP
 from .matter_emulator import modecount_rebin_multi_pk, modecount_rebin
-from .matter_emulator import MatterEmulator
+from .matter_emulator import MatterEmulator, MultiBinGP
 
 class Power(object):
     """Mock power object"""
@@ -84,6 +84,32 @@ def test_highRes_interp(fname: str = "data/highRes/processed/test_dmonly.hdf5") 
 
     # test interpolation
     assert np.abs( (means - emu.Y) / emu.Y ).mean() < 1e-4
+
+class MultiPower(object):
+    """Mock power object"""
+    def __init__(self,params):
+        self.params = params
+
+    def get_power(self, kf):
+        """Get the flux power spectrum."""
+        flux_vector = kf*100*(self.params[0] + self.params[1]**2)
+        return flux_vector
+
+def test_emu_multi_param():
+    """Simplest model possible with multiple parameters.
+    One is linear multiplication, one is a squared term."""
+    kf = np.array([ 0.00141,  0.00178,  0.00224,  0.00282])
+    p1 = np.linspace(0.25,1.75,10)
+    p2 = np.linspace(0.1,1.,10)
+    p2 = np.tile(p2,10)
+    p1 = np.repeat(p1,10)
+    params = np.vstack([p1.T,p2.T]).T
+    powers = np.array([MultiPower(par).get_power(kf=kf) for par in params])
+    plimits = np.array(((0.25,1.75),(0.1,1)))
+    gp = MatterGP(params=params, powers = powers, param_limits = plimits)
+
+    predict,_ = gp.predict(np.reshape(np.array([0.5,0.288]),(1,-1)))
+    assert np.max(np.abs(predict - (0.5+0.288**2) * 100*kf)/predict) < 1e-4
 
 # # TODO: not quite working yet
 # def test_emukit_loop():
