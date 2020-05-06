@@ -372,9 +372,23 @@ class MatterEmulator(HDF5Emulator):
     def predict(self, X : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         '''
         Make predictions but include the variances
+
+        :param X: (n_points, n_dim)
         '''
-        raise NotImplementedError
-    
+        stds  = []
+        means = []
+
+        for i,gp in enumerate(self.gps):
+            m, s = gp.predict(X)
+            
+            means.append(m)
+            stds.append(s)
+
+        means = np.transpose(np.array(means), (1, 0, 2))
+        stds  = np.transpose( np.array(stds), (1, 0, 2))
+
+        return means, stds
+
     def set_data(self, X: np.ndarray, Y: np.ndarray) -> None:
         raise NotImplementedError
 
