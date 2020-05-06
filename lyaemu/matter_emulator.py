@@ -113,9 +113,17 @@ class HDF5Emulator(IModel):
     def Y(self) -> np.ndarray:
         raise NotImplementedError
 
-    def get_bounds(self):
+    def get_bounds(self) -> List[Tuple[float]]:
         return self.parameter_space.get_bounds()
 
+    def sample_uniform(self, n_points: int) -> np.ndarray:
+        '''
+        Generates multiple uniformly distributed random parameter points.
+
+        :param point_count: number of data points to generate.
+        :returns: Generated points with shape (point_count, n_dim)
+        '''
+        return self.parameter_space.sample_uniform(n_points)
 
 class MatterEmulator(HDF5Emulator):
     '''
@@ -391,6 +399,20 @@ class MatterEmulator(HDF5Emulator):
         stds  = np.transpose( np.array(stds), (1, 0, 2))
 
         return means, stds
+
+    def sample_XY_uniform(self, n_points: int) -> Tuple[np.ndarray]:
+        '''
+        Sample uniformly in the parameter space at the same time
+        make predictions on the sampled parameters
+
+        :param n_points: number of points sampled
+        :return: (X, means, stds) params, predictions, uncertainties
+        '''
+        X = self.sample_uniform(n_points)
+
+        means, stds = self.predict(X)
+
+        return X, means, stds
 
     def set_data(self, X: np.ndarray, Y: np.ndarray) -> None:
         raise NotImplementedError
