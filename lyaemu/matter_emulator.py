@@ -1,7 +1,10 @@
 '''
 An Emulator mapping from MP-Gadget param space to P(k, z) bins
 '''
-from typing import List, Type, Tuple
+from typing import List, Type, Tuple, Generator
+
+from functools import reduce
+from collections import Counter
 
 import numpy as np
 import h5py
@@ -143,10 +146,13 @@ class MatterEmulator(HDF5Emulator):
                     ... ],
     }
     '''
-    def __init__(self, mutlips : Type[h5py.File]):
-        raise NotImplementedError
-    
-    
+    def __init__(self, multips : Type[h5py.File]):        
+        super().__init__(multips)
+
+        # set the target Y powerspecs
+        # self.set_powerspecs()
+
+
     def set_powerspecs(self):
         '''
         Set the multi-dimensional X and Y for input and output,
@@ -161,13 +167,150 @@ class MatterEmulator(HDF5Emulator):
         :attr Y: (N_GPs, n_points, k_modes)
         :attr scale_factors:
         '''
-        # self._X = Latin_samplings
-        # self._Y = powerspecs
-        raise NotImplementedError
-    
+        # loop over simulations
+        kf_list            = []
+        powerspecs_list    = []
+        scale_factors_list = []
+
+        for sim in self._gen_subgroups():
+            # query powerspecs:
+            # it is in dimension of (n redshifts, k_modes, 4)
+            # 0th of 4 is k
+            # 1st of 4 is pk
+            powerspecs = sim['powerspecs'][()]
+
+            # kf should be the same for each row
+            kf_list.append(powerspecs[-1, :, 0]) # choose to store z = 0
+            assert np.all( powerspecs[-1, :, 0] == powerspecs[0, :, 0] )
+
+            # power spectra should store across all redshifts
+            powerspecs_list.append(powerspecs[:, :, 1]) # (n redshifts, k_modes)
+
+            scale_factors_list.append(sim['scale_factors'][()])
+
+        # all kf should also be the same
+        assert np.sum( np.abs( kf_list[0] - kf_list[-1] ) / kf_list[0] ) < 1e-4
+        self.kf = kf_list[-1] # choose to store z = 0
+
+        # all scale factors are not the same
+        # so what we can to is to select the common redshifts among them
+        # but I prefer separate that in a different function from clearness
+        self.scale_factors_list = scale_factors_list # List[ sim_i/scale_factors ]
+
+        self.powerspecs_list = powerspecs_list
+        
+        # filter out non-shared scale factors
+        # this modifies self.scale_factors_list and self.powerspecs_list
+        n_points = self._X.shape[0] # total number of simulations we ran
+        scale_factors, powerspecs = self.filter_scale_factors(
+            num_simulations=n_points)
+
+        # update scale factors and powerspecs after the filtering
+        self.scale_factors = scale_factors
+
+        # this is almost the Y values, just need to re-bin
+        # (n_points, n_redshifts, k_modes) -> (n_redshifts, n_points, k_modes)
+        self.powerspecs = powerspecs
+
+        assert self.scale_factors[-1].shape[0] == self.scale_factors[0].shape[0]
+        assert self.scale_factors[-1][-1] == self.scale_factors[0][-1]
+
+
+
+    def filter_scale_factors(self, num_simulations:int
+            ) -> Tuple[np.ndarray, np.ndarray]:
+        '''
+        Filter out the scale factors which do not appear in other
+
+        :attr scale_factors_list:
+        :attr powerspecs_list: modified accroding to the filtering of scale
+            factors.
+        
+        :param num_simulations: number of simulations you run in this file
+        :return: (scale_factors, powerspecs)
+            scale_factors: (n_points, n_redshifts)
+            powerspecs:    (n_points, n_redshifts, k_modes)
+        '''
+        # flatten the list and find the most common scale factors
+        flatten_scale_factors = reduce(
+            lambda x,y : np.concatenate([x, y]), self.scale_factors_list)
+
+        assert len(flatten_scale_factors) == sum(
+            map(lambda x: x.shape[0], self.scale_factors_list))
+
+        # thresholding all the scale factors that not happenning in every sims
+        # first need to get the counts of each scale factors
+        count = Counter(flatten_scale_factors)
+
+        shared_scale_factors = np.array(
+            [key for key,val in count.items() if val >= num_simulations])
+        assert count.most_common(1)[0][1] == num_simulations
+
+        # update the powerspecs and scale factors based on whether they are
+        # in the shared_scale_factors
+        assert len(self.powerspecs_list) == num_simulations
+
+        scale_factors = np.empty((num_simulations, len(shared_scale_factors)))
+        powerspecs    = np.empty((num_simulations, len(shared_scale_factors),
+            len(self.kf) )) # (n_points, n_redshifts, k_modes)
+
+        for i in range(num_simulations):
+            # only select the scale factors in the shared_scale_factors
+            this_scale_factors = self.scale_factors_list[i]
+            this_powerspecs    = self.powerspecs_list[i]
+
+            ind = np.isin(this_scale_factors, shared_scale_factors)
+
+            scale_factors[i, :] = this_scale_factors[ind]
+            powerspecs[i, :, :] = this_powerspecs[ind, :]
+
+        assert np.sum( np.abs( scale_factors - shared_scale_factors ) 
+            / scale_factors ) < 1e04
+        print(str(
+            "[Info] Aftering filtering out non-shared scale factors, "
+            "only {} powerspecs left per simulation".format(
+            len(shared_scale_factors))
+            ))
+        
+        return scale_factors, powerspecs
+
+    def _gen_subgroups(self) -> Generator:
+        '''
+        A generator to yield HDF5 subgroups
+        '''
+        n_points = self._X.shape[0]
+        assert self._X.shape[1] == self.parameter_space.dimensionality
+
+        for i in range(n_points):
+            name = "simulation_{}".format(i)
+
+            # query the ith subgroup
+            yield self.multips[name]
+
     @staticmethod
     def rebin_matter_power(k_bins : np.ndarray) -> np.ndarray:
         raise NotImplementedError
+
+    def predict(self, X : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        '''
+        Make predictions but include the variances
+        '''
+        raise NotImplementedError
+    
+    def set_data(self, X: np.ndarray, Y: np.ndarray) -> None:
+        raise NotImplementedError
+
+    def optimize(self, verbose: bool = False) -> None:
+        raise NotImplementedError
+    
+    @property
+    def X(self) -> np.ndarray:
+        return self._X
+    
+    @property
+    def Y(self) -> np.ndarray:
+        raise NotImplementedError
+
 
 class MultiFidelityEmulator(IModel, IDifferentiable):
     def __init__(self, mutlips_list : List[Type[h5py.File]] ):
@@ -175,7 +318,8 @@ class MultiFidelityEmulator(IModel, IDifferentiable):
 
 
 
-def modecount_rebin(kk, pk, modes, minmodes=20, ndesired=200):
+def modecount_rebin(kk:np.ndarray, pk:np.ndarray, modes:np.ndarray,
+        minmodes:int=20, ndesired:int=200) -> Tuple[np.ndarray, np.ndarray]:
     """Rebins a power spectrum so that there are sufficient modes in each bin"""
     assert np.all(kk) > 0
     logkk=np.log10(kk)
@@ -200,10 +344,9 @@ def modecount_rebin(kk, pk, modes, minmodes=20, ndesired=200):
     pk_list = np.array(pk_list)
     return (k_list, pk_list)
 
-def get_power(matpow, rebin=True):
+def get_power(data:np.ndarray, rebin:bool=True) -> Tuple[np.ndarray, np.ndarray]:
     """Plot the power spectrum from CAMB
     (or anything else where no changes are needed)"""
-    data = np.loadtxt(matpow)
     kk = data[:,0]
     ii = np.where(kk > 0.)
     #Rebin power so that there are enough modes in each bin
