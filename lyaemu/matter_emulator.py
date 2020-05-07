@@ -263,11 +263,13 @@ class MatterEmulator(HDF5Emulator):
         kf, powerspecs = self.rebin_matter_power(
             self.kf, self.powerspecs, modes)
 
-        self.kf         = kf
+        # save a copy of non-log version of P(k,z)
+        self.kf_real    = kf
         self.powerspecs = powerspecs
 
         # also set to Y target value
-        self._Y = powerspecs
+        self._Y = np.log10(powerspecs)
+        self.kf = np.log10(kf)
 
     def filter_scale_factors(self, num_simulations:int
             ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
