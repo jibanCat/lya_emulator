@@ -22,6 +22,9 @@ import GPy
 from emukit.core.interfaces import IModel
 from emukit.model_wrappers import GPyModelWrapper
 
+from emukit.multi_fidelity.models.non_linear_multi_fidelity_model import (
+    make_non_linear_kernels, NonLinearMultiFidelityModel)
+
 # multi-fidelity utility function
 from emukit.multi_fidelity.kernels import LinearMultiFidelityKernel
 from emukit.multi_fidelity.convert_lists_to_array import (convert_y_list_to_array,
@@ -465,8 +468,8 @@ class MatterMultiFidelityLinearGP(GPy.core.GP):
             for i in range(n_fidelities):
                 nparams = np.shape(params_list[i])[1]
 
-                kernel = GPy.kern.Linear(nparams)
-                kernel += GPy.kern.RBF(nparams)
+                kernel = GPy.kern.Linear(nparams, ARD=True)
+                kernel += GPy.kern.RBF(nparams, ARD=True)
                 kernel_list.append(kernel)
 
         # make multi-fidelity kernels
@@ -540,7 +543,137 @@ class MatterMultiFidelityLinearGP(GPy.core.GP):
         
         return normspectra, scalefactors, paramzero
 
+class PkMultiFidelityLinearGP(GPy.core.GP):
+    '''
+    A thin wrapper around GPy.core.GP that does some input checking and provides
+    a default likelihood.
+    Also transform the multi-fidelities params and powerspecs to the Multi-Output
+    GP can take.
+    And normalize the scale of powerspecs.
 
-def make_non_linear_kernels(base_kernel_class: Type[GPy.kern.Kern],
-        n_fidelities: int, n_input_dims: int) -> List[Type[GPy.kern.Kern]]:
-    pass
+    :param params_list:  (n_fidelities, n_points, n_dims) list of parameter vectors.
+    :param kf_list:      (n_fidelities, k_modes)
+    :param powers_list:  (n_fidelities, n_points, k modes) list of flux power spectra.
+    :param param_limits: (n_fidelities, n_dim, 2) list of param_limits.
+
+    :param n_fidelities: number of fidelities stored in the list.
+
+    :param n_restarts (int): number of optimization restarts you want in GPy.
+    '''
+    def __init__(self, params_list: List[np.ndarray], kf_list: List[np.ndarray],
+            param_limits_list: List[np.ndarray], powers_list : List[np.ndarray],
+            kernel_list: Optional[List],
+            n_fidelities: int, likelihood: GPy.likelihoods.Likelihood=None):
+        # preparing X and Y
+        # now we are interpolating also in the k space, so no needs for
+        # limiting length of kf in highRes
+        # make sure using the (max kf, min kf) of highRes as param_limits
+
+        #Map the parameters onto a unit cube so that all the variations are
+        # similar in magnitude.
+        normed_param_list = []
+        for i in range(n_fidelities):
+            nparams = np.shape(params_list[i])[1]
+            params_cube = self._map_params_to_unit_cube(
+                params_list[i][:, :-1], param_limits_list[i])
+            
+            params_cube = np.concatenate(
+                (params_cube, params_list[i][:, -1:]), axis=1)
+
+            normed_param_list.append(params_cube)
+
+        # #Normalise by the median value
+        # # -> shift power spectra to zero mean
+        # normed_powers_list = []
+        # normspectra, scalefactors, paramzero = self._normalize(
+        #     powers_list[-1], normed_param_list[-1])
+        # for i in range(n_fidelities - 1):
+        #     normed_powers_list.append(
+        #         powers_list[i] / scalefactors - 1)
+        # normed_powers_list.append(normspectra)
+
+        # convert into X,Y for MultiOutputGP
+        # not normalize due to no improvements
+        X, Y = convert_xy_lists_to_arrays(normed_param_list, powers_list)
+
+        if kernel_list == None:
+            #Standard squared-exponential kernel with a different length scale for 
+            # each parameter, as they may have very different physical properties.
+            kernel_list = []
+            for i in range(n_fidelities):
+                nparams = np.shape(params_list[i])[1]
+
+                kernel = GPy.kern.Linear(nparams, ARD=True)
+                kernel += GPy.kern.RBF(nparams,   ARD=True)
+                kernel_list.append(kernel)
+
+        # make multi-fidelity kernels
+        kernel = LinearMultiFidelityKernel(kernel_list)
+
+        # linear multi-fidelity setup
+        if X.ndim != 2:
+            raise ValueError('X should be 2d')
+
+        if Y.ndim != 2:
+            raise ValueError('Y should be 2d')
+
+        if np.any(X[:, -1] >= n_fidelities):
+            raise ValueError('One or more points has a higher fidelity index than number of fidelities')
+
+        # Make default likelihood as different noise for each fidelity
+        if likelihood is None:
+            likelihood = GPy.likelihoods.mixed_noise.MixedNoise(
+                [GPy.likelihoods.Gaussian(variance=1.) for _ in range(n_fidelities)])
+        y_metadata = {'output_index': X[:, -1].astype(int)}
+        super().__init__(X, Y, kernel, likelihood, Y_metadata=y_metadata)
+
+    @staticmethod
+    def _map_params_to_unit_cube(params: np.ndarray, 
+            param_limits: np.ndarray) -> np.ndarray:
+        '''
+        Map the parameters onto a unit cube so that all the variations are
+        similar in magnitude.
+        
+        :param params: (n_points, n_dims) parameter vectors
+        :param param_limits: (n_dim, 2) param_limits is a list 
+            of parameter limits.
+        :return: params_cube, (n_points, n_dims) parameter vectors 
+            in a unit cube.
+        '''
+        nparams = np.shape(params)[1]
+        params_cube = map_to_unit_cube_list(
+            params, param_limits)
+        assert params_cube.shape[1] == nparams
+
+        #Check that we span the parameter space
+        # note: this is a unit LH cube spanning from Θ ∈ [0, 1]^num_dim
+        for i in range(nparams):
+            assert np.max(params_cube[:,i]) > 0.9
+            assert np.min(params_cube[:,i]) < 0.1
+
+        return params_cube
+
+    @staticmethod
+    def _normalize(flux_vectors: np.ndarray, params_cube: np.ndarray
+            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Normalize the flux_vectors to a zero mean vector
+        using the median of flux_vectors
+
+        :param flux_vectors: (n_points, k modes) flux power spectra.
+        :param params_cube: (n_points, n_dims) parameter vectors in a unit cube.
+        :return: (normspectra, scalefactors, paramzero)
+        """
+        #Normalise the flux vectors by the median power spectrum.
+        #This ensures that the GP prior (a zero-mean input) is close to true.
+        medind = np.argsort(np.mean(flux_vectors, axis=1))[
+            np.shape(flux_vectors)[0]//2]
+
+        scalefactors = flux_vectors[medind,:]
+        paramzero    = params_cube[medind,:]
+
+        #Normalise by the median value
+        # -> shift power spectra to zero mean
+        normspectra = flux_vectors / scalefactors -1.
+        
+        return normspectra, scalefactors, paramzero
