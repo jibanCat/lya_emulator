@@ -190,7 +190,7 @@ class MatterEmulator(HDF5Emulator):
         self.gps = [gp(i) for i in range(num_redshifts)]
         print("Number of redshifts for emulator generator = ", num_redshifts)
 
-    def set_powerspecs(self):
+    def set_powerspecs(self, minmodes:int=20, ndesired:int=200):
         '''
         Set the multi-dimensional X and Y for input and output,
         where X = [X1, X2, ..., Xn], Xi is an input for each GP,
@@ -261,7 +261,8 @@ class MatterEmulator(HDF5Emulator):
         # will be the same across different simulations. So make sure
         # write some tests on that.
         kf, powerspecs = self.rebin_matter_power(
-            self.kf, self.powerspecs, modes)
+            self.kf, self.powerspecs, modes,
+            minmodes, ndesired)
 
         # save a copy of non-log version of P(k,z)
         self.kf_real    = kf
@@ -348,7 +349,8 @@ class MatterEmulator(HDF5Emulator):
 
     @staticmethod
     def rebin_matter_power(kf: np.ndarray, powerspecs : np.ndarray,
-            modes : np.ndarray) -> Tuple[ np.ndarray, np.ndarray ]:
+            modes : np.ndarray,
+            minmodes:int=20, ndesired:int=200) -> Tuple[ np.ndarray, np.ndarray ]:
         '''
         Re-bin powerspecs. This is done by using MP-Gadget's tools
         `modecount_rebin`. Note that we apply the rebinning for all
@@ -372,7 +374,8 @@ class MatterEmulator(HDF5Emulator):
 
             # re-bin P(z,k)
             this_kf, this_powerspecs = modecount_rebin_multi_pk(
-                kf, this_powerspecs, this_modes)
+                kf, this_powerspecs, this_modes,
+                minmodes, ndesired)
             
             powerspecs_list.append(this_powerspecs)
             kf_list.append(this_kf)
