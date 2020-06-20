@@ -102,7 +102,8 @@ def test_two_fidelities_MFEmulator_w_HFEmualtor(
     X_test_lf = convert_x_list_to_array([X_test_lf, X_test_lf])
 
     # training a HF model
-    high_gp_model = make_high_fidelity_gp(params_list, powers_list)
+    high_gp_model = make_high_fidelity_gp(params_list, powers_list,
+        param_limits_list, n_fidelities=2)
 
     # plotting loop: plot first 10
     i = 0
@@ -145,7 +146,9 @@ def test_two_fidelities_MFEmulator_w_HFEmualtor(
         plt.show()
 
 def make_high_fidelity_gp(params_list : List[np.ndarray],
-        powers_list: List[np.ndarray]) -> GPy.models.GPRegression:
+        powers_list: List[np.ndarray],
+        param_limits_list: List,
+        n_fidelities : int = 2) -> GPy.models.GPRegression:
     '''
     Generate a GP based on provided params_list
     '''
