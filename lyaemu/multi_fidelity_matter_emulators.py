@@ -330,7 +330,7 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         X = convert_x_list_to_array([X for _ in range(n_fidelities)])
         
         return X
-    
+
     # plotting functions
     @staticmethod
     def plot_pk(x_plot: np.ndarray, 
@@ -353,3 +353,60 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         plt.ylabel('log10(P(k))')
         plt.xlim(-2, 2)
         plt.ylim(-1, 5)
+
+    # making HF only model for comparison
+    def get_interp_high_fidelity(self, n_optimization_restarts: int = 5) -> None:
+        '''
+        Generate a HF only GP
+        '''
+        n_fidelities = len(self.kf_list)
+
+        # fit High-fidelity only
+        #Map the parameters onto a unit cube so that all the variations are
+        # similar in magnitude.
+        nparams = np.shape(self.param_list[n_fidelities-1])[1]
+        params_cube = PkMultiFidelityLinearGP._map_params_to_unit_cube(
+            self.param_list[n_fidelities-1][:, :-1],
+            self.param_limits_list[n_fidelities-1])
+        
+        X_hf = np.concatenate(
+            (params_cube, self.param_list[n_fidelities-1][:, -1:]), axis=1)
+        Y_hf = self.powers_list[n_fidelities-1]
+
+        # modelling setup
+        # make sure turn on ARD
+        nparams = np.shape(self.param_list[-1])[1]
+        kernel  = GPy.kern.Linear(nparams, ARD=True)
+        kernel += GPy.kern.RBF(nparams, ARD=True)
+
+        model_hf = GPy.models.GPRegression(X_hf, Y_hf, kernel)
+        model_hf.Gaussian_noise.fix(0)
+        model_hf.optimize_restarts(n_optimization_restarts)
+
+        self.model_hf = model_hf
+
+    def predict_hf(self, param_cube: np.ndarray, x_plot: np.ndarray):
+        '''
+        Make predictions using HF-only model
+        '''
+        x_sample_plot = self.make_x_plot(param_cube, x_plot)
+
+        mean_pk_hf, var_pk_hf = self.model_hf.predict(x_sample_plot)
+        std_pk_hf = np.sqrt(var_pk_hf)
+
+        return mean_pk_hf, std_pk_hf
+
+    def plot_mf_hf_comparisons(self, param_cube: np.ndarray, x_plot: np.ndarray):
+        '''
+        Plot the interpolation of matter powerspecs of a multi-fidelity model
+        and a high-fidelity model.
+        '''
+        mean_pk_mf_hf, std_pk_mf_hf = self.predict(param_cube, x_plot)
+        mean_pk_hf, std_pk_hf       = self.predict_hf(param_cube, x_plot)
+
+        # plotting functions here:
+        self.plot_pk(x_plot, mean_pk_mf_hf[:, 0], std_pk_mf_hf[:, 0],
+            label='MF: HF output', color="C0")
+        self.plot_pk(x_plot, mean_pk_hf[:, 0], std_pk_hf[:, 0],
+            label='HF-only', color="C1")
+        plt.legend()
