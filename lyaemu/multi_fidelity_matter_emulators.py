@@ -4,6 +4,7 @@ Multi-Fidelity Emulator applied on matter power spectrum
 from typing import List, Type, Tuple, Any
 
 import numpy as np
+from matplotlib import pyplot as plt
 import h5py
 import GPy
 
@@ -13,6 +14,11 @@ import GPy
 from emukit.core.interfaces import IModel, IDifferentiable
 from emukit.multi_fidelity.convert_lists_to_array import convert_y_list_to_array
 from emukit.multi_fidelity.convert_lists_to_array import convert_x_list_to_array
+
+# Multi-Fidelity is basically a Multi-Output GP, so we need to use a
+# Multi-Output wrapper wrap on top of the GPs
+# Note: Multi-Output GP: An additional Covariance on top of different GPs
+from emukit.model_wrappers.gpy_model_wrappers import GPyMultiOutputWrapper
 
 from .matter_emulator import MatterEmulator
 from .gpemulator_emukit import MatterMultiFidelityLinearGP, PkMultiFidelityLinearGP
@@ -79,18 +85,20 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         self.param_limits_list = param_limits_list
         self.powers_list       = powers_list
 
-    def get_interp(self):
+    def get_interp(self, n_optimization_restarts: int = 5):
         '''
         A wrapper over self._get_interp, to make the function arguments easier
         read.
         '''
         n_fidelities = len(self.kf_list)
         self._get_interp(self.param_list, self.kf_list, self.param_limits_list,
-            self.powers_list, n_fidelities=n_fidelities)
+            self.powers_list, n_fidelities=n_fidelities,
+            n_optimization_restarts=n_optimization_restarts)
 
     def _get_interp(self, params_list: List[np.ndarray], kf_list: List[np.ndarray],
             param_limits_list: List[np.ndarray], powers_list: List[np.ndarray],
-            n_fidelities: int, kernel_list=None) -> None:
+            n_fidelities: int, kernel_list=None,
+            n_optimization_restarts: int = 5) -> None:
         '''
         GP interpolate on the different fidelity.
 
@@ -109,12 +117,23 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         '''
         gp = PkMultiFidelityLinearGP(params_list, kf_list, param_limits_list, powers_list,
             kernel_list=kernel_list, n_fidelities=n_fidelities)
+        
+        # fixed the noise to 0, since we assume simulations have no noise
+        getattr(gp.mixed_noise, 'Gaussian_noise').fix(0)
+        for i in range(1, n_fidelities):
+            getattr(gp.mixed_noise, 'Gaussian_noise_{}'.format(i)).fix(0)
+
+        model = GPyMultiOutputWrapper(gp, n_outputs=n_fidelities,
+            n_optimization_restarts=n_optimization_restarts)
 
         self.gp = gp
+        self.model = model
+
+        self.model.optimize()
 
     def prepare_mf_inputs(self, matter_emulator_list : List[MatterEmulator],
             minmodes: int = 20, ndesired : int = 200, z0: int = 0,
-            number_samples_list: List[int] = [20, 3],
+            number_samples_list: List[int] = [10, 3],
             randomize: bool = False)-> Tuple[List]:
         '''
         Prepare the inputs lists for Multi-Fidelity model
@@ -236,3 +255,101 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
 
         return this_pk, this_arg_params
 
+    # MF prediction function: only make highest fidelity predictions here
+    def predict(self, param_cube: np.ndarray, x_plot:np.ndarray) -> Tuple[np.ndarray]:
+        '''
+        :param params_cube: (1, n_dim) without k_mode dimension.
+        :param x_plot: (k_points, ) the x points we want to plot
+        :return: (mean_pk_mf_hf, std_pk_mf_hf)
+            mean P(k) for HF output and its STD.
+        '''
+        n_fidelities = len(self.kf_list)
+
+        # Multi-Fidelity GP predictions
+        x_sample_plot = self.make_x_plot(param_cube, x_plot)
+        # plot highRes output
+        X_hf_sample_plot = np.concatenate(
+            (x_sample_plot, np.ones((len(x_plot), 1)) * (n_fidelities - 1)),
+            axis=1)
+
+        # MF: HF output
+        mean_pk_mf_hf, var_pk_mf_hf = self.model.predict(X_hf_sample_plot)
+        std_pk_mf_hf = np.sqrt(var_pk_mf_hf)
+        
+        return mean_pk_mf_hf, std_pk_mf_hf
+
+    @staticmethod
+    def make_x_plot(params_cube: np.ndarray, x_plot:np.ndarray,
+            ) -> np.ndarray:
+        '''
+        :param params_cube: (1, n_dim) without k_mode dimension
+        :return: x_sample_plot (k_points, n_dim + 1),
+            x_plot (k_points, )
+        '''
+        x_sample_plot = np.repeat(params_cube, x_plot.shape[0], axis=0)
+
+        x_sample_plot = np.concatenate(
+            (x_sample_plot, x_plot[:, None]), axis=1)
+
+        return x_sample_plot
+
+    def predict_uniform(self):
+        '''
+        Make predictions from uniformly sampling the parameter space (not k space).
+        '''
+        X_test = self.sample_uniform(self.matter_emulator_list[-1],
+            n_samples=1)
+        
+        n_fidelities = len(self.kf_list)
+        
+        param_cube   = X_test[n_fidelities - 1, :-1][None, :]
+        x_plot = np.linspace(-2, 2, 50)
+
+        # makes prediction and interpolation on P(k) based on a single param_cube
+        mean_pk_mf_hf, std_pk_mf_hf = self.predict(param_cube, x_plot)
+
+        return mean_pk_mf_hf, std_pk_mf_hf
+
+    def sample_uniform(self, emu: MatterEmulator, n_samples : int = 10
+            ) -> np.ndarray:
+        '''
+        sample uniformly in the cosmological parameter space (not k space).
+        '''
+        # uniformly sample
+        X_test = emu.parameter_space.sample_uniform(n_samples)
+
+        return self._convert_mf_inputs(
+            X_test, np.array(emu.parameter_space.get_bounds()), len(self.kf_list))
+
+    @staticmethod
+    def _convert_mf_inputs(X: np.ndarray, param_limits: np.ndarray,
+            n_fidelities: int) -> np.ndarray:
+        assert n_fidelities > 1
+        X = PkMultiFidelityLinearGP._map_params_to_unit_cube(
+            X, param_limits)
+        X = convert_x_list_to_array([X for _ in range(n_fidelities)])
+        
+        return X
+    
+    # plotting functions
+    @staticmethod
+    def plot_pk(x_plot: np.ndarray, 
+            mean_pk: np.ndarray, std_pk: np.ndarray,
+            label: str = "", color="C0") -> None:
+        '''
+        :param x_plot: (k_points, )
+        :param mean_pk: (k_points, ) note the output of gp.predict
+            is (k_points, 1) and you only want the last dimension.
+        :param std_pk: (k_points, )
+        Note: n_dim, dimension of params_cube
+        '''
+        plt.plot(x_plot, mean_pk, color=color)
+        plt.fill_between(
+            x_plot,
+            mean_pk - 1.96 * std_pk,
+            mean_pk + 1.96 * std_pk,
+            alpha=0.3, color=color, label=label)
+        plt.xlabel('log10(k)')
+        plt.ylabel('log10(P(k))')
+        plt.xlim(-2, 2)
+        plt.ylim(-1, 5)
