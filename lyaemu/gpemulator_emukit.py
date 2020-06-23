@@ -510,11 +510,17 @@ class MatterMultiFidelityLinearGP(GPy.core.GP):
             params, param_limits)
         assert params_cube.shape[1] == nparams
 
+        # this caused problems for selecting too few samples, especially for
+        # MF interpolation it's necessary to select only 2~3 points for HF.
+        # So not assertion but print warnings. TODO: using logging instead.
+        #
         #Check that we span the parameter space
         # note: this is a unit LH cube spanning from Θ ∈ [0, 1]^num_dim
         for i in range(nparams):
-            assert np.max(params_cube[:,i]) > 0.9
-            assert np.min(params_cube[:,i]) < 0.1
+            cond1 = np.max(params_cube[:,i]) > 0.9
+            cond2 = np.min(params_cube[:,i]) < 0.1
+            if cond1 or cond2:
+                print("[Warning] the LH cube not spanning from Θ ∈ [0, 1]^num_dim.")
 
         return params_cube
 
@@ -570,7 +576,8 @@ class PkMultiFidelityLinearGP(GPy.core.GP):
         # make sure using the (max kf, min kf) of highRes as param_limits
 
         #Map the parameters onto a unit cube so that all the variations are
-        # similar in magnitude.
+        # similar in magnitude. But no needs for interpolating on the k-space;
+        # the -1: stands for ignoring the k-space
         normed_param_list = []
         for i in range(n_fidelities):
             nparams = np.shape(params_list[i])[1]
@@ -645,11 +652,17 @@ class PkMultiFidelityLinearGP(GPy.core.GP):
             params, param_limits)
         assert params_cube.shape[1] == nparams
 
+        # this caused problems for selecting too few samples, especially for
+        # MF interpolation it's necessary to select only 2~3 points for HF.
+        # So not assertion but print warnings. TODO: using logging instead.
+        #
         #Check that we span the parameter space
         # note: this is a unit LH cube spanning from Θ ∈ [0, 1]^num_dim
         for i in range(nparams):
-            assert np.max(params_cube[:,i]) > 0.9
-            assert np.min(params_cube[:,i]) < 0.1
+            cond1 = np.max(params_cube[:,i]) > 0.9
+            cond2 = np.min(params_cube[:,i]) < 0.1
+            if cond1 or cond2:
+                print("[Warning] the LH cube not spanning from Θ ∈ [0, 1]^num_dim.")
 
         return params_cube
 
