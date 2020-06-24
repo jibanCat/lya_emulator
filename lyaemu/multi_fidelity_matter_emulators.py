@@ -21,7 +21,7 @@ from emukit.multi_fidelity.convert_lists_to_array import convert_x_list_to_array
 from emukit.model_wrappers.gpy_model_wrappers import GPyMultiOutputWrapper
 
 from .matter_emulator import MatterEmulator
-from .gpemulator_emukit import MatterMultiFidelityLinearGP, PkMultiFidelityLinearGP
+from .gpemulator_emukit import MatterMultiFidelityLinearGP, PkMultiFidelityLinearGP, PkMultiFidelityNonLinearGP
 
 class MultiFidelityMatterEmulator(IModel, IDifferentiable):
     '''
@@ -130,6 +130,33 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         self.model = model
 
         self.model.optimize()
+
+    def get_interp_nonlinear(self, n_optimization_restarts: int = 5):
+        '''
+        A wrapper over self._get_interp_nonlinear, to make the function
+        arguments easier to read.
+        '''
+        n_fidelities = len(self.kf_list)
+        self._get_interp_nonlinear(self.param_list, self.kf_list, self.param_limits_list,
+            self.powers_list, n_fidelities=n_fidelities,
+            n_optimization_restarts=n_optimization_restarts)
+
+    def _get_interp_nonlinear(self, params_list: List[np.ndarray], kf_list: List[np.ndarray],
+            param_limits_list: List[np.ndarray], powers_list: List[np.ndarray],
+            n_fidelities: int, kernel_list=None,
+            n_optimization_restarts: int = 5) -> None:
+        '''
+        GP interpolate on the different fidelity.
+        '''
+        model_nonlin = PkMultiFidelityNonLinearGP(params_list, kf_list, param_limits_list, powers_list,
+            n_fidelities=n_fidelities, optimization_restarts=n_optimization_restarts)
+
+        # fixed the noise to 0, since we assume simulations have no noise
+        for m in model_nonlin.models:
+            m.Gaussian_noise.variance.fix(0)
+
+        self.model_nonlin = model_nonlin
+        self.model_nonlin.optimize()
 
     def prepare_mf_inputs(self, matter_emulator_list : List[MatterEmulator],
             minmodes: int = 20, ndesired : int = 200, z0: int = 0,
