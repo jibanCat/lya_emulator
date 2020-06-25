@@ -456,9 +456,6 @@ class MultiBinGP(MatterEmulator):
 
         self.scale_factors = scale_factor
 
-class MultiFidelityEmulator(IModel, IDifferentiable):
-    def __init__(self, mutlips_list : List[Type[h5py.File]] ):
-        raise NotImplementedError
 
 def modecount_rebin_multi_pk(kk:np.ndarray, pk:np.ndarray, modes:np.ndarray,
         minmodes:int=20, ndesired:int=200) -> Tuple[np.ndarray, np.ndarray]:

@@ -53,7 +53,8 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
     MatterEmualtors as the input.
     '''
     def __init__(self, matter_emulator_list : List[MatterEmulator],
-            minmodes: int = 20, ndesired : int = 200, z0: int = 0):
+            minmodes: int = 20, ndesired : int = 200, z0: int = 0,
+            number_samples_list: List[int] = [10, 3]):
         self.matter_emulator_list = matter_emulator_list
         
         self.minmodes = minmodes
@@ -63,7 +64,8 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         # parepare the multi-fidelity inputs and outputs to interpolate.
         # they would be saved into self
         self.prepare_mf_inputs(self.matter_emulator_list,
-            minmodes=minmodes, ndesired=ndesired, z0=z0)
+            minmodes=minmodes, ndesired=ndesired, z0=z0,
+            number_samples_list=number_samples_list)
 
     # being explicit about the inputs and outputs
     @property
@@ -131,7 +133,8 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
 
         self.model.optimize()
 
-    def get_interp_nonlinear(self, n_optimization_restarts: int = 5):
+    def get_interp_nonlinear(self, n_samples : int = 100,
+    n_optimization_restarts: int = 5):
         '''
         A wrapper over self._get_interp_nonlinear, to make the function
         arguments easier to read.
@@ -139,17 +142,21 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
         n_fidelities = len(self.kf_list)
         self._get_interp_nonlinear(self.param_list, self.kf_list, self.param_limits_list,
             self.powers_list, n_fidelities=n_fidelities,
+            n_samples=n_samples,
             n_optimization_restarts=n_optimization_restarts)
 
     def _get_interp_nonlinear(self, params_list: List[np.ndarray], kf_list: List[np.ndarray],
             param_limits_list: List[np.ndarray], powers_list: List[np.ndarray],
             n_fidelities: int, kernel_list=None,
+            n_samples : int = 100,
             n_optimization_restarts: int = 5) -> None:
         '''
         GP interpolate on the different fidelity.
         '''
         model_nonlin = PkMultiFidelityNonLinearGP(params_list, kf_list, param_limits_list, powers_list,
-            n_fidelities=n_fidelities, optimization_restarts=n_optimization_restarts)
+            n_fidelities=n_fidelities,
+            n_samples=n_samples,
+            optimization_restarts=n_optimization_restarts)
 
         # fixed the noise to 0, since we assume simulations have no noise
         for m in model_nonlin.models:
@@ -195,7 +202,7 @@ class MultiFidelityMatterEmulator(IModel, IDifferentiable):
             # re-set the binning of powerspecs. Too many k modes may induce
             # a large input matrix.
             print("[Info] Rebinning the power specs with {} modes and {} desired ".format(
-                minmodes, ndesired), end="")
+                minmodes, ndesired))
             this_emu.set_powerspecs(minmodes, ndesired)
             print("... with length of kf = {}.".format(len(this_emu.kf)))
 

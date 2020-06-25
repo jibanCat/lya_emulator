@@ -28,7 +28,7 @@ def gen_n_fidelities(
 
     n_fidelities = len(fname_list)
 
-    print("[Info] Loading {} fidelity data ...".format(n_fidelities), end="")
+    print("[Info] Loading {} fidelity data ...".format(n_fidelities))
 
     # setting emulators for different fidelities
     emu_n_fidelities = []
