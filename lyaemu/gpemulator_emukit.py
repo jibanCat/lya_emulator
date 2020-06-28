@@ -705,12 +705,13 @@ class PkMultiFidelityNonLinearGP(NonLinearMultiFidelityModel):
     :param param_limits: (n_fidelities, n_dim, 2) list of param_limits.
 
     :param n_fidelities: number of fidelities stored in the list.
-
+    :param n_samples: Number of samples to use to do quasi-Monte-Carlo integration at each fidelity. Default 100
     :param n_restarts (int): number of optimization restarts you want in GPy.
     '''
     def __init__(self, params_list: List[np.ndarray], kf_list: List[np.ndarray],
             param_limits_list: List[np.ndarray], powers_list : List[np.ndarray],
-            n_fidelities: int, optimization_restarts: int = 5):
+            n_fidelities: int, n_samples : int = 100,
+            optimization_restarts: int = 5):
         # preparing X and Y
         # now we are interpolating also in the k space, so no needs for
         # limiting length of kf in highRes
@@ -746,12 +747,17 @@ class PkMultiFidelityNonLinearGP(NonLinearMultiFidelityModel):
     
         #Standard squared-exponential kernel with a different length scale for 
         # each parameter, as they may have very different physical properties.
-        base_kernel = GPy.kern.RBF
+        base_kernel_1 = GPy.kern.RBF
+        # base_kernel_2 = GPy.kern.Linear
+
+        # kernels = self.make_non_linear_kernels(
+        #     base_kernel_1, base_kernel_2, n_fidelities, X.shape[1] - 1,
+        #     ARD=True) # -1 for the multi-fidelity labels
 
         kernels = make_non_linear_kernels(
-            base_kernel, n_fidelities, X.shape[1] - 1,
-            ARD=True) # -1 for the multi-fidelity labels
-
+                    base_kernel_1, n_fidelities, X.shape[1] - 1,
+                    ARD=True) # -1 for the multi-fidelity labels
+        
         # linear multi-fidelity setup
         if X.ndim != 2:
             raise ValueError('X should be 2d')
@@ -763,7 +769,66 @@ class PkMultiFidelityNonLinearGP(NonLinearMultiFidelityModel):
             raise ValueError('One or more points has a higher fidelity index than number of fidelities')
 
         super().__init__(X, Y, n_fidelities, kernels=kernels, verbose=True,
+            n_samples=n_samples,
             optimization_restarts=optimization_restarts)
+
+    @staticmethod
+    def make_non_linear_kernels(base_kernel_class_1: Type[GPy.kern.Kern],
+                                base_kernel_class_2: Type[GPy.kern.Kern],
+                                n_fidelities: int, n_input_dims: int, ARD: bool=False) -> List:
+        """
+        Slightly Modified Emukit's non-linear kernel function to allow two
+        base kernel classes.
+
+        This function takes two base kernel classes and constructs the structured multi-fidelity kernels
+
+        At the first level the kernel is simply:
+        .. math
+            k_{base}(x, x') <- k_{base1}(x, x') + k_{base2}(x, x')
+
+        At subsequent levels the kernels are of the form
+        .. math
+            k_{base}(x, x')k_{base}(y_{i-1}, y{i-1}') + k_{base}(x, x')
+
+        :param base_kernel_class: GPy class definition of the kernel type to construct the kernels at
+        :param n_fidelities: Number of fidelities in the model. A kernel will be returned for each fidelity
+        :param n_input_dims: The dimensionality of the input.
+        :param ARD: If True, uses different lengthscales for different dimensions. Otherwise the same lengthscale is used
+                    for all dimensions. Default False.
+        :return: A list of kernels with one entry for each fidelity starting from lowest to highest fidelity.
+        """
+
+        base_dims_list = list(range(n_input_dims))
+        kernels = [
+            base_kernel_class_1(n_input_dims, active_dims=base_dims_list, ARD=ARD, name='kern1_fidelity_1')
+            + base_kernel_class_2(n_input_dims, active_dims=base_dims_list, ARD=ARD, name='kern2_fidelity_1')
+            ]
+        for i in range(1, n_fidelities):
+            fidelity_name = 'fidelity' + str(i + 1)
+
+            # the covariance within fidelity
+            interaction_kernel = base_kernel_class_1(
+                n_input_dims, active_dims=base_dims_list, ARD=ARD,
+                name='scale1_kernel_' + fidelity_name) + base_kernel_class_2(
+                n_input_dims, active_dims=base_dims_list, ARD=ARD,
+                name='scale2_kernel_' + fidelity_name)
+
+            # the scale between fidelities
+            scale_kernel = base_kernel_class_1(
+                1, active_dims=[n_input_dims],
+                name='previous1_fidelity_' + fidelity_name) + base_kernel_class_2(
+                1, active_dims=[n_input_dims],
+                name='previous2_fidelity_' + fidelity_name)
+
+            # the bias between fidelities
+            bias_kernel = base_kernel_class_1(
+                n_input_dims, active_dims=base_dims_list,
+                ARD=ARD, name='bias1_kernel_' + fidelity_name) + base_kernel_class_2(
+                n_input_dims, active_dims=base_dims_list,
+                ARD=ARD, name='bias2_kernel_' + fidelity_name)
+
+            kernels.append(interaction_kernel * scale_kernel + bias_kernel)
+        return kernels
 
     @staticmethod
     def _map_params_to_unit_cube(params: np.ndarray, 
