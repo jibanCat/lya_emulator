@@ -405,7 +405,7 @@ class MatterEmulator(HDF5Emulator):
 
         return means, stds
 
-    def sample_XY_uniform(self, n_points: int) -> Tuple[np.ndarray]:
+    def sample_XY_uniform(self, n_points: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Sample uniformly in the parameter space at the same time
         make predictions on the sampled parameters
